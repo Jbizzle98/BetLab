@@ -1,0 +1,153 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="BetLab NBA">
+<meta name="color-scheme" content="light dark"><title>BetLab NBA</title>
+<style>
+:root{--bg:#fff;--fg:#111;--mut:#667;--card:#f3f4f6;--acc:#2563eb;--g:#16a34a;--r:#dc2626;--y:#d97706}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1115;--fg:#eee;--mut:#99a;--card:#1a1d24;--acc:#60a5fa;--g:#4ade80;--r:#f87171;--y:#fbbf24}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px -apple-system,system-ui,sans-serif;padding:env(safe-area-inset-top) 12px calc(76px + env(safe-area-inset-bottom))}
+h2{margin:14px 0 6px}.card{background:var(--card);border-radius:12px;padding:12px;margin:10px 0}.sub,small{color:var(--mut);font-size:13px;display:block}
+.g{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:8px 0;font-size:12px;color:var(--mut)}.g b{display:block;font-size:15px;color:var(--fg)}
+button,select,input,textarea{font:inherit;padding:10px;border-radius:10px;border:1px solid #8884;background:var(--bg);color:var(--fg);max-width:100%}
+button{background:var(--acc);color:#fff;border:0;margin:3px 3px 3px 0}button.s{background:#8885;color:var(--fg)}
+nav{position:fixed;left:0;right:0;bottom:0;display:flex;background:var(--card);padding-bottom:env(safe-area-inset-bottom);border-top:1px solid #8883}
+nav button{flex:1;background:none;color:var(--mut);border-radius:0;margin:0;padding:14px 0}nav button.on{color:var(--acc);font-weight:600}
+.tag{font-size:12px;padding:2px 8px;border-radius:99px;background:#8885;float:right}.Strong,.Moderate{color:var(--g)}.Marginal{color:var(--y)}.NO{color:var(--r)}
+.w{color:var(--y);font-size:14px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}input[type=number],input[type=text],input[type=password]{width:110px}
+</style></head><body><div id="app"></div>
+<nav><button data-t="picks" onclick="go('picks')">Picks</button><button data-t="slip" onclick="go('slip')">Slip</button><button data-t="track" onclick="go('track')">Tracker</button><button data-t="set" onclick="go('set')">Settings</button></nav>
+<script>
+/* ===== PURE LOGIC (tested in node) ===== */
+const a2d=a=>{a=+a;if(!(a>=100||a<=-100))throw Error('American odds must be +100 or more, or -100 or less');return a>0?1+a/100:1+100/-a};
+const d2a=d=>d>=2?Math.round((d-1)*100):Math.round(-100/(d-1));
+const nv=ds=>{const r=ds.map(x=>1/x),s=r.reduce((a,b)=>a+b);return r.map(x=>x/s)};
+const ev=(p,d,pp=0)=>p*(d-1)-(1-p-pp);
+const settle=(st,d,r)=>r=='win'?st*(d-1):r=='loss'?-st:0;
+const clamp=p=>Math.min(.99,Math.max(.01,p));
+const d2f=d=>{let b=[1,1,9];for(let q=1;q<=20;q++){const n=Math.round((d-1)*q);if(n>0){const e=Math.abs(d-1-n/q);if(e<b[2]-1e-9)b=[n,q,e]}}return b[0]+'/'+b[1]};
+const pOdds=(v,f)=>{v=String(v).trim();if(f=='american')return a2d(v);if(f=='fractional'){const[n,d]=v.split('/').map(Number);if(!(n>0&&d>0))throw Error('Use fractional odds like 5/2');return 1+n/d}const x=+v;if(!(x>1))throw Error('Decimal odds must be above 1');return x};
+const vr=e=>e>=.05?'Strong':e>=.02?'Moderate':e>0?'Marginal':'None';
+function analyze(evs,minEV=2,minRel=40){const out=[];
+ for(const e of evs){const agg={};
+  for(const b of e.bookmakers||[])for(const m of b.markets||[]){
+   if(!['h2h','spreads','totals'].includes(m.key)||m.outcomes.length!=2||m.outcomes.some(o=>!(o.price>1)))continue;
+   const ps=nv(m.outcomes.map(o=>o.price));
+   m.outcomes.forEach((o,i)=>{const k=m.key+'|'+o.name+'|'+(o.point??'');
+    const a=agg[k]=agg[k]||{m:m.key,sel:o.name,line:o.point??null,ps:[],best:0,book:'',upd:null};
+    a.ps.push(ps[i]);if(o.price>a.best){a.best=o.price;a.book=b.title;a.upd=m.last_update||b.last_update}})}
+  for(const a of Object.values(agg)){const p=a.ps.reduce((x,y)=>x+y)/a.ps.length,x=ev(p,a.best),age=a.upd?(Date.now()-Date.parse(a.upd))/6e4:null;
+   const rel=Math.round(Math.min(a.ps.length,8)/8*75+(age!=null&&age<=60?15:0)),nb=x*100<minEV||rel<minRel;
+   out.push({eid:e.id,game:e.away_team+' @ '+e.home_team,start:e.commence_time,m:a.m,sel:a.sel,line:a.line,book:a.book,d:a.best,p,imp:1/a.best,ev:x,rel,n:a.ps.length,rec:nb?'NO BET':'Candidate',score:nb?0:x*rel})}}
+ return out}
+function grade(m,sel,line,sc){const n=Object.keys(sc);
+ if(m=='totals'){const t=n.reduce((s,k)=>s+sc[k],0);return t==line?'push':(t>line)==(sel=='Over')?'win':'loss'}
+ if(!(sel in sc))return null;const o=n.find(k=>k!=sel),mg=m=='h2h'?sc[sel]-sc[o]:sc[sel]+line-sc[o];return mg==0?'push':mg>0?'win':'loss'}
+function parlay(legs,stake){let d=1;legs.forEach(l=>d*=l.d);const flags=[];
+ for(let i=0;i<legs.length;i++)for(let j=i+1;j<legs.length;j++)if(legs[i].eid==legs[j].eid)flags.push(`Legs ${i+1} and ${j+1} are from the same game, so they are correlated.`);
+ const ps=legs.map(l=>l.p),o={d,ret:stake*d,profit:stake*(d-1),flags,joint:null,ev:null,bounds:[Math.max(0,ps.reduce((a,b)=>a+b)-(ps.length-1)),Math.min(...ps)]};
+ if(!flags.length){o.joint=ps.reduce((a,b)=>a*b);o.ev=o.joint*d-1}return o}
+function summary(bets,b0){const s=bets.filter(b=>b.res!='pending'),w=s.filter(b=>b.res=='win'),l=s.filter(b=>b.res=='loss');
+ const net=s.reduce((a,b)=>a+settle(b.stake,b.d,b.res),0),wag=[...w,...l].reduce((a,b)=>a+b.stake,0);
+ let bank=b0,pk=b0,dd=0;[...s].sort((a,b)=>(a.st||'')<(b.st||'')?-1:1).forEach(b=>{bank+=settle(b.stake,b.d,b.res);pk=Math.max(pk,bank);dd=Math.max(dd,pk-bank)});
+ const dec=w.length+l.length;return{n:s.length,w:w.length,l:l.length,pend:bets.length-s.length,wag,net,roi:wag?net/wag:null,wr:dec?w.length/dec:null,bank,dd,
+  be:dec?[...w,...l].reduce((a,b)=>a+1/b.d,0)/dec:null}}
+function scenario(n,st,d,wr){const w=n*wr,net=w*st*(d-1)-(n-w)*st;return{net,wag:n*st,roi:net/(n*st),be:1/d}}
+/* ===== UI ===== */
+const LS='betlab1';let S=Object.assign({key:'',fmt:'american',stake:2,bank:100,maxDay:20,dayLoss:10,weekLoss:25,maxGame:6,sport:'basketball_nba',minEV:2,minRel:40,bets:[],preds:[],lists:[],slip:[],rows:[],meta:{},cache2:{},inj:null},JSON.parse(localStorage.getItem(LS)||'{}'));
+const save=()=>{try{localStorage.setItem(LS,JSON.stringify(S))}catch(e){msg='Storage full or blocked: export a backup.'}};
+S.sport='basketball_nba';let tab='picks',msg='',F={mk:'all',hide:true,sort:'score',mode:'singles'};
+const $=x=>document.getElementById(x),esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pct=x=>(x*100).toFixed(1)+'%',money=x=>(x<0?'-':'')+'$'+Math.abs(x).toFixed(2),fo=d=>S.fmt=='decimal'?d.toFixed(2):S.fmt=='fractional'?d2f(d):(a=>a>0?'+'+a:''+a)(d2a(d));
+const MN={h2h:'Moneyline',spreads:'Spread',totals:'Total'},lbl=x=>esc(x.sel)+(x.line!=null?' '+(x.m=='spreads'&&x.line>0?'+':'')+x.line:'');
+function go(t){tab=t;r()}
+function r(){document.querySelectorAll('nav button').forEach(b=>b.className=b.dataset.t==tab?'on':'');$('app').innerHTML=({picks,slip,track,set})[tab]();window.scrollTo(0,0)}
+async function api(path,q={}){if(!S.key)throw Error('Add your Odds API key in Settings first.');let x;
+ try{x=await fetch('https://api.the-odds-api.com'+path+'?'+new URLSearchParams({...q,apiKey:S.key}))}catch(e){throw Error('Could not reach the odds service (offline, or blocked by the browser).')}
+ const rem=x.headers.get('x-requests-remaining');if(rem!=null){S.meta.rem=rem;S.meta.used=x.headers.get('x-requests-used')}
+ if(x.status==401)throw Error('API key was rejected.');if(x.status==429)throw Error('Credit or rate limit reached.');if(!x.ok)throw Error('Odds service error '+x.status);return x.json()}
+const ESPN={basketball_nba:'basketball/nba'};
+async function loadInj(){const p=ESPN[S.sport];if(!p){S.inj=null;return}
+ try{const x=await fetch('https://site.api.espn.com/apis/site/v2/sports/'+p+'/injuries');if(!x.ok)throw 0;const j=await x.json(),teams={};
+  (j.injuries||[]).forEach(t=>{teams[t.displayName]=(t.injuries||[]).map(i=>({n:(i.athlete&&(i.athlete.displayName||i.athlete.fullName))||'?',s:i.status||''}))});
+  if(!Object.keys(teams).length)throw 0;S.inj={sp:S.sport,t:Date.now(),teams}}catch(e){S.inj={sp:S.sport,err:1,t:Date.now(),teams:{}}}}
+async function refresh(force){msg='Loading...';r();try{const c=S.cache2[S.sport];let evs;
+ if(!force&&c&&Date.now()-c.t<18e5){evs=c.evs;msg='Used cached data (under 30 min old) to save credits.'}
+ else{evs=await api('/v4/sports/'+S.sport+'/odds',{regions:'us',markets:'h2h,spreads,totals',oddsFormat:'decimal'});S.cache2[S.sport]={t:Date.now(),evs};msg=''}
+ await loadInj();const noInj=ESPN[S.sport]&&(!S.inj||S.inj.err);
+ S.rows=analyze(evs,S.minEV,S.minRel).map(x=>{x.sp=S.sport;if(noInj){x.rel=Math.max(0,x.rel-10);if(x.ev*100<S.minEV||x.rel<S.minRel){x.rec='NO BET';x.score=0}else x.score=x.ev*x.rel}return x});
+ S.meta.t=S.cache2[S.sport].t;S.meta.games=evs.length;
+ const keys=new Set(S.preds.map(p=>p.k));S.rows.filter(x=>Date.parse(x.start)>Date.now()).forEach(x=>{const k=[x.eid,x.m,x.sel,x.line,x.d].join('|');if(!keys.has(k))S.preds.push({k,t:new Date().toISOString(),...x,res:null})})
+ }catch(e){msg=e.message+' Showing last data.'}save();r()}
+async function settleAll(){msg='Checking scores...';r();try{let n=0;const sps=[...new Set([...S.preds,...S.bets].filter(p=>p.res==null||p.res=='pending').map(p=>p.sp||'basketball_nba'))];
+ for(const sp of sps){const sc=await api('/v4/sports/'+sp+'/scores',{daysFrom:3});
+  for(const e of sc){if(!e.completed||!e.scores)continue;const m={};e.scores.forEach(q=>m[q.name]=+q.score);
+   S.preds.forEach(p=>{if(p.eid==e.id&&!p.res){const g=grade(p.m,p.sel,p.line,m);if(g){p.res=g;n++}}});
+   S.bets.forEach(b=>{if(b.eid==e.id&&b.res=='pending'&&b.kind=='single'){const g=grade(b.m,b.sel,b.line,m);if(g){b.res=g;b.st=new Date().toISOString();n++}}})}}
+ msg=sps.length?`Settled ${n} item(s). Parlays and anything missing settle by hand.`:'Nothing pending to settle.'}catch(e){msg=e.message}save();r()}
+const injTxt=x=>{if(!ESPN[x.sp||'basketball_nba'])return '<small>Injuries: no free injury feed for this league.</small>';if(!S.inj||S.inj.err||S.inj.sp!=S.sport)return '<small>⚠ Injury status unchecked (feed unavailable): reliability reduced.</small>';
+ return '<small>Injuries (ESPN, unofficial, may lag): '+x.game.split(' @ ').map(t=>esc(t)+': '+((S.inj.teams[t]||[]).slice(0,6).map(i=>esc(i.n)+' ('+esc(i.s)+')').join(', ')||'none listed')).join(' | ')+'</small>'};
+const net=since=>S.bets.filter(b=>b.res!='pending'&&(b.st||b.t)>=since).reduce((a,b)=>a+settle(b.stake,b.d,b.res),0);
+function warns(add){const w=[],now=Date.now(),tot=add.reduce((a,x)=>a+x.s,0),g={};
+ if(-net(new Date(now-864e5).toISOString())>=S.dayLoss)w.push('Daily loss limit reached (last 24h). Consider stopping for today.');
+ if(-net(new Date(now-6048e5).toISOString())>=S.weekLoss)w.push('Weekly loss limit reached. Consider stopping for the week.');
+ if(tot+todayRisk()>S.maxDay)w.push(`Today's total risk would be ${money(tot+todayRisk())}, above your ${money(S.maxDay)} limit.`);
+ S.bets.filter(b=>b.res=='pending'&&b.eid).forEach(b=>g[b.eid]=(g[b.eid]||0)+b.stake);add.forEach(x=>g[x.e]=(g[x.e]||0)+x.s);
+ if(Object.values(g).some(v=>v>S.maxGame))w.push(`Risk on a single game would exceed ${money(S.maxGame)}.`);return w}
+const calib=sp=>{if(!sp.length)return '';const b={};sp.forEach(p=>{const k=Math.min(9,Math.floor(clamp(p.p)*10));(b[k]=b[k]||[]).push(p)});
+ return '<div class=card><b>Calibration</b><small>Does est. win % match reality? Needs many picks per row to mean anything.</small>'+Object.keys(b).sort().map(k=>{const a=b[k],w=a.filter(p=>p.res=='win').length/a.length;return `<div class=row><span style="width:80px">${k*10}-${k*10+10}%</span><div style="flex:1;min-width:60px;height:8px;background:#8883;border-radius:4px"><div style="height:8px;border-radius:4px;background:var(--acc);width:${w*100}%"></div></div><small>actual ${pct(w)} · est ${pct(a.reduce((q,p)=>q+p.p,0)/a.length)} · n=${a.length}</small></div>`}).join('')+'</div>'};
+function picks(){const rows=S.rows.map((x,i)=>({...x,i})).filter(x=>(F.mk=='all'||x.m==F.mk)&&(!F.hide||x.rec=='Candidate')).sort((a,b)=>b[F.sort]-a[F.sort]);
+ const cands=S.rows.filter(x=>x.rec=='Candidate').length;
+ return `<h2>🏀 NBA picks</h2><button onclick="refresh(false)">Refresh & analyze</button><button class=s onclick="refresh(true)">Force</button>
+ <small>${msg||''} ${S.meta.t?'Last data: '+new Date(S.meta.t).toLocaleTimeString():'No data yet.'} ${S.meta.rem!=null?' · credits left: '+S.meta.rem:''}</small>
+ <div class=card><small>Coverage: ${S.meta.games||0} games, ${S.rows.length} selections (moneyline, spread, totals). Player props are not analyzed. ${cands} candidate(s) met your thresholds; the rest are NO BET.</small></div>
+ <div class=row><select onchange="F.mk=this.value;r()">${['all','h2h','spreads','totals'].map(k=>`<option value=${k} ${F.mk==k?'selected':''}>${MN[k]||'All markets'}</option>`).join('')}</select>
+ <select onchange="F.sort=this.value;r()">${[['score','Rank'],['ev','EV'],['p','Win %'],['rel','Reliability']].map(([k,v])=>`<option value=${k} ${F.sort==k?'selected':''}>Sort: ${v}</option>`).join('')}</select>
+ <label><input type=checkbox ${F.hide?'checked':''} onchange="F.hide=this.checked;r()"> Hide NO BET</label></div>
+ <small>Est. win % is the no-vig consensus of the books, not a forecast. High win % is not the same as value.</small>
+ ${rows.slice(0,60).map(x=>`<div class=card><b>${lbl(x)}</b><span class="tag ${x.rec=='NO BET'?'NO':vr(x.ev)}">${x.rec=='NO BET'?'NO BET':vr(x.ev)}</span>
+ <span class=sub>${esc(x.game)} · ${MN[x.m]} · ${new Date(x.start).toLocaleString([],{weekday:'short',hour:'numeric',minute:'2-digit'})}</span>
+ <div class=g><div>Best odds<b>${fo(x.d)}</b>${esc(x.book)}</div><div>Est. win<b>${pct(clamp(x.p))}</b>implied ${pct(x.imp)}</div><div>EV<b>${(x.ev*100).toFixed(1)}%</b>per $1</div><div>Reliability<b>${x.rel}/100</b>${x.n} books</div></div>
+ <details><summary>Why?</summary><small>No-vig consensus of ${x.n} book(s) = ${pct(x.p)}. The best price (${esc(x.book)}) implies ${pct(x.imp)}. Any edge is versus the market consensus, not an independent model.${x.n<3?' Few books: low reliability.':''} Odds can move before you bet.</small>${injTxt(x)}</details>
+ <button onclick="addLeg(${x.i})">+ Slip</button></div>`).join('')||'<div class=card>Nothing to show. Add your key in Settings, then Refresh.</div>'}`}
+function addLeg(i){S.slip.push(S.rows[i]);save();msg='Added to slip.';r()}
+function mv(i,d){const j=i+d;if(j<0||j>=S.slip.length)return;[S.slip[i],S.slip[j]]=[S.slip[j],S.slip[i]];save();r()}
+function rm(i){S.slip.splice(i,1);save();r()}
+const todayRisk=()=>S.bets.filter(b=>b.t.slice(0,10)==new Date().toISOString().slice(0,10)).reduce((a,b)=>a+b.stake,0);
+function slip(){if(!S.slip.length)return '<h2>Slip</h2><div class=card>Empty. Add selections from Picks. Nothing is ever placed for you.</div>';
+ const legs=S.slip.map(x=>`<div class=card><b>${lbl(x)}</b> @ ${fo(x.d)} <small>${esc(x.game)} · ${esc(x.book)}</small>
+ <button class=s onclick="mv(${S.slip.indexOf(x)},-1)">↑</button><button class=s onclick="mv(${S.slip.indexOf(x)},1)">↓</button><button class=s onclick="rm(${S.slip.indexOf(x)})">Remove</button></div>`).join('');
+ let body;if(F.mode=='singles'){const st=S.slip.map((x,i)=>+(($('s'+i)||{}).value||S.stake));const tot=st.reduce((a,b)=>a+b,0),pw=S.slip.reduce((a,x,i)=>a+st[i]*(x.d-1),0);
+  body=S.slip.map((x,i)=>`<div class=row>Stake ${i+1} $<input id=s${i} type=number step=0.5 value=${st[i]} onchange="r()"></div>`).join('')+`<div class=card>Risked ${money(tot)} · profit if all win ${money(pw)} · loss if all lose ${money(-tot)}</div>`+
+  warns(S.slip.map((x,i)=>({e:x.eid,s:st[i]}))).map(w=>`<div class=w>⚠ ${w}</div>`).join('')+`<button onclick="recS()">Record as bets (I placed them myself)</button>`}
+ else if(S.slip.length<2)body='<div class=card>A parlay needs at least 2 legs.</div>';
+ else{const st=+(($('ps')||{}).value||S.stake),p=parlay(S.slip,st);
+  body=`<div class=row>Stake $<input id=ps type=number step=0.5 value=${st} onchange="r()"></div><div class=card>Combined ${fo(p.d)} · returns ${money(p.ret)} · profit if all win ${money(p.profit)}<br>
+  ${p.flags.map(f=>`<span class=w>⚠ ${f}</span><br>`).join('')}Joint win probability: <b>${p.joint==null?'unavailable (legs are correlated; not multiplied)':pct(p.joint)+' (approximate, assumes independence)'}</b>
+  <small>Assumption-free range: ${pct(p.bounds[0])} to ${pct(p.bounds[1])}${p.ev!=null?' · approx. EV '+(p.ev*100).toFixed(1)+'%':' · EV unavailable'}</small></div>${warns([...new Set(S.slip.map(x=>x.eid))].map(e=>({e,s:st}))).map(w=>`<div class=w>⚠ ${w}</div>`).join('')}<button onclick="recP()">Record parlay</button>`}
+ return `<h2>Slip</h2><div class=row><button class="${F.mode=='singles'?'':'s'}" onclick="F.mode='singles';r()">Independent singles</button><button class="${F.mode=='parlay'?'':'s'}" onclick="F.mode='parlay';r()">Parlay</button></div>${legs}${body}
+ <div class=row><input id=ln type=text placeholder="Shortlist name"><button class=s onclick="shortl()">Save shortlist (no bet)</button></div><small>${msg}</small>`}
+function recS(){S.slip.forEach((x,i)=>S.bets.push({id:Date.now()+i,t:new Date().toISOString(),kind:'single',sp:x.sp,eid:x.eid,game:x.game,m:x.m,sel:x.sel,line:x.line,book:x.book,d:x.d,stake:+$('s'+i).value||0,res:'pending'}));S.slip=[];save();msg='';go('track')}
+function recP(){const st=+$('ps').value||0,p=parlay(S.slip,st);S.bets.push({id:Date.now(),t:new Date().toISOString(),kind:'parlay',game:S.slip.map(x=>x.sel+(x.line!=null?' '+x.line:'')).join(' + '),d:p.d,stake:st,res:'pending'});S.slip=[];save();go('track')}
+function shortl(){const n=$('ln').value.trim()||'Shortlist';S.lists.push({n,t:new Date().toISOString(),legs:S.slip.map(x=>({sel:x.sel,line:x.line,game:x.game,d:x.d}))});save();msg='Saved shortlist "'+n+'".';r()}
+function sb(id,res){const b=S.bets.find(b=>b.id==id);if(b&&b.res=='pending'){b.res=res;b.st=new Date().toISOString();save();r()}}
+function scen(){try{const d=pOdds($('so').value,S.fmt),n=+$('sn').value,x=scenario(n,+$('ss').value,d,+$('sw').value/100);
+ $('sr').innerHTML=`PROJECTION ONLY (not real results): expected net <b>${money(x.net)}</b> on ${money(x.wag)} wagered, ROI ${pct(x.roi)}. Break-even win rate ${pct(x.be)}.`}catch(e){$('sr').textContent=e.message}}
+function track(){const s=summary(S.bets,S.bank),sp=S.preds.filter(p=>p.res=='win'||p.res=='loss'),sw=sp.filter(p=>p.res=='win').length;
+ return `<h2>Tracker & P/L</h2><div class=card><div class=g><div>Bankroll<b>${money(s.bank)}</b></div><div>Net<b>${money(s.net)}</b></div><div>ROI<b>${s.roi==null?'-':pct(s.roi)}</b></div><div>Win rate<b>${s.wr==null?'-':pct(s.wr)}</b></div></div>
+ <small>Recorded bets: ${s.w}W-${s.l}L, ${s.pend} pending · wagered ${money(s.wag)} · break-even win rate ${s.be==null?'-':pct(s.be)} · max drawdown ${money(s.dd)}</small></div>
+ <button onclick="settleAll()">Settle finished games (~2 credits)</button><small>${msg}</small>
+ <div class=card><b>Model predictions (all, incl. ones you skipped)</b><small>${S.preds.length} logged · ${sp.length} settled${sp.length?` · avg est. win ${pct(sp.reduce((a,p)=>a+p.p,0)/sp.length)} vs actual ${pct(sw/sp.length)}`:''}${sp.length<30?' · too few to judge accuracy':''}</small></div>${calib(sp)}
+ ${[...S.bets].reverse().map(b=>`<div class=card><b>${esc(b.sel||b.game)}${b.line!=null?' '+b.line:''}</b> @ ${fo(b.d)} · ${money(b.stake)} <span class=tag>${b.res}</span><small>${esc(b.kind=='single'?b.game:'parlay')} · ${b.t.slice(0,10)}${b.res!='pending'?' · '+money(settle(b.stake,b.d,b.res)):''}</small>
+ ${b.res=='pending'?['win','loss','push','void'].map(x=>`<button class=s onclick="sb(${b.id},'${x}')">${x}</button>`).join(''):''}</div>`).join('')}
+ <div class=card><b>Scenario calculator (hypothetical)</b><div class=row>Bets <input id=sn type=number value=100> Stake $<input id=ss type=number value=2> Odds <input id=so type=text value="${S.fmt=='decimal'?'1.91':S.fmt=='fractional'?'10/11':'-110'}"> Win % <input id=sw type=number value=55></div><button onclick="scen()">Calculate</button><div id=sr class=sub></div></div>`}
+function set(){return `<h2>Settings</h2><div class=card><b>Odds API key</b> <small>Free key at the-odds-api.com. Stored only on this phone, in this app. ${S.key?'Key saved ('+S.key.slice(0,2)+'••••••'+S.key.slice(-2)+')':'No key yet.'}</small>
+ <input id=k type=password placeholder="Paste key" style="width:100%"><button onclick="S.key=$('k').value.trim()||S.key;save();r()">Save</button><button class=s onclick="test()">Test (no credits)</button><button class=s onclick="S.key='';save();r()">Remove</button><small>${msg}</small></div>
+ <div class=card><div class=row>Odds format <select id=f onchange="S.fmt=this.value;save();r()"><option value=american ${S.fmt=='american'?'selected':''}>American</option><option value=decimal ${S.fmt=='decimal'?'selected':''}>Decimal</option><option value=fractional ${S.fmt=='fractional'?'selected':''}>Fractional</option></select></div>
+ ${[['stake','Default stake $'],['bank','Starting bankroll $'],['maxDay','Daily risk limit $'],['dayLoss','Daily loss limit $'],['weekLoss','Weekly loss limit $'],['maxGame','Max risk per game $'],['minEV','Min EV %'],['minRel','Min reliability']].map(([k,l])=>`<div class=row>${l} <input type=number step=any value=${S[k]} onchange="S['${k}']=+this.value;save()"></div>`).join('')}<small>EV/reliability changes apply on next Refresh.</small></div>
+ <div class=card><b>Backup</b><small>Your history lives only on this phone. Copy a backup now and then (key excluded).</small><button onclick="bk()">Show backup</button><button class=s onclick="rs()">Restore from box</button><textarea id=b rows=5 style="width:100%"></textarea></div>
+ <div class=card><b>Free data status</b><small>Odds API: ${S.meta.rem!=null?S.meta.rem+' credits left ('+S.meta.used+' used)':'not checked yet'}. Injuries (ESPN, unofficial, no key): ${S.inj?(S.inj.err?'unavailable on last try':'loaded '+new Date(S.inj.t).toLocaleTimeString()):'not loaded'}. Player props: no free source, not included.</small></div><small>Research and tracking only. No bets are placed. No result is guaranteed; bet only what you can afford to lose.</small>`}
+async function test(){try{const x=await api('/v4/sports');msg='Connected ('+x.length+' sports). Credits left: '+S.meta.rem}catch(e){msg=e.message}save();r()}
+function bk(){const c={...S,key:'',cache:null,rows:[]};$('b').value=JSON.stringify(c);$('b').select()}
+function rs(){try{const o=JSON.parse($('b').value);if(!Array.isArray(o.bets))throw 0;S={...S,...o,key:S.key};save();msg='Restored.';r()}catch(e){msg='That is not a valid backup.';r()}}
+if(typeof document!=='undefined'&&document.getElementById('app'))r();
+</script></body></html>
